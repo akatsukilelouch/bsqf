@@ -1,0 +1,9 @@
+(
+    (:global remoteExec "BIS_fnc_remoteExec")
+    (:global openArsenal "BIS_fnc_openArsenal")
+    (:global forEach "forEach")
+    (:set data (remoteExec (openArsenal player)))
+    
+    (:define openArsenal (x)
+        ((remoteExec x)
+        (remoteExec y))))
