@@ -6,27 +6,27 @@ type SExpr =
     | Atom of identifier: string
     | Literal of value: string
     | Quote of quoted: SExpr
-    | List of expressions: SExpr list
+    | List of SExpr list
 
-let atom =
+let private atom =
     many1Satisfy <|
         fun c ->
             not <| List.contains c ['('; ')'; '`'; '"'; ' '; '\n'; '\r']
     |>> Atom
 
-let literal =
+let private literal =
     between <| skipChar '"' <| skipChar '"' <| manyChars (attempt (pchar '\\' >>. pchar '"') <|> noneOf ['"']) |>> Literal
 
-let quote p =
-    skipChar '`' >>. p |>> Quote <|> p
+let private quote parser =
+    skipChar '`' >>. parser |>> Quote <|> parser
 
 #nowarn 40
-let rec list =
+let rec private list =
     let parenthesized = between (skipChar '(') (skipChar ')')
 
     let self x = list x
 
-    parenthesized (between spaces spaces <| sepEndBy (attempt literal <|> attempt atom <|> attempt (quote self) <|> attempt self) spaces |>> List)
+    parenthesized (between spaces spaces <| sepEndBy (attempt literal <|> attempt atom <|> attempt (quote self) <|> attempt self) spaces) |>> List
 
 exception ParsingErrorException of string
 

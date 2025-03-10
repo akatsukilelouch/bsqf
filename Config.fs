@@ -1,4 +1,4 @@
-module Bsqf.Configuration
+module Bsqf.Config
 open System.IO
 open Legivel.Serialization
 
@@ -8,6 +8,7 @@ type Module = {
 
 type FileConfig = {
     BootstrapModules: Module list;
+    GlobalDefinitionsPath: string option;
 }
 
 exception InvalidConfigException

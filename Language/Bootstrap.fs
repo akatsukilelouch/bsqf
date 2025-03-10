@@ -10,12 +10,15 @@ type Context = {
     mutable Modules: Map<string, Module>;
 }
 
-let resolve (config: Configuration.FileConfig) (context: Context) (entry: Module) =
+let resolve (config: Config.FileConfig) (context: Context) (entry: Module) =
     let lexed = Lexer.lexFile entry.Path.FullName
 
-    printf "%s" <| Parser.compile lexed
+    match lexed with
+    | Bsqf.Lexer.List lexed -> printf "%s" <| (Parser.parse lexed).ToString()
+    | e -> printf "%s" (e.ToString())
 
-let public bootstrap (config: Configuration.FileConfig) =
+
+let public bootstrap (config: Config.FileConfig) =
     let context = {
         Modules = Map [];
     }

@@ -1,299 +1,282 @@
 module Bsqf.Parser
-
+open Bsqf.Config
+open Bsqf.Ast
 open Bsqf.Lexer
 
-// everything that we need to do is to compile a specific set of sexprs to sqf
-// all these sepxrs have one specific form
+type Arg =
+    | Untyped of name: Identifier
+    | Typed of name: Identifier * type_: Identifier
 
-type DeclarationKind =
-    | DeclarationPrivate
-    | DeclarationParams
+type Function = {
+    Name: Identifier;
+    Args: Arg list;
 
-type SqfExpression =
-    | StringLiteralExpression of literal: string
-    | NumberLiteralExpression of literal: string
-    | VariableExpression of identifier: string
-    | ArrayExpression of items: SqfExpression list
-    | GroupingExpression of inner: SqfExpression
-    | BinaryOperationExpression of left: SqfExpression * right: SqfExpression * operator: string
-    | UnaryOperationExpression of right: SqfExpression * operator: string
-    | BlockExpression of statements: SqfStatement list
-and SqfStatement =
-    | AssignmentStatement of identifier: string * expression: SqfExpression
-    | IfStatement of block: SqfExpression * then_: SqfExpression * else_: SqfExpression option
-    | WhileStatement of block: SqfExpression * code: SqfExpression
-    | ForStatement of identifier: string * from: SqfExpression option * to_: SqfExpression option * block: SqfExpression
-    | DeclarationStatement of kind: string * array: SqfExpression
-    | ExpressionStatement of expression: SqfExpression
-    | BreakStatement of with_: SqfExpression option
-    | ContinueStatement of with_: SqfExpression option
-    | ExitStatement of with_: SqfExpression option
+    Generated: AstTree;
+};
 
-let escape =
-    let map c =
-        match c with
-            | '"' -> "\\\""
-            | c -> string c
-        
-    String.collect map
+type Global = {
+    Name: Identifier;
+    Receiver: bool;
+};
 
-let ident level =
-    String.replicate level " "
+type Compilation = {
+    Monotonic: int;
+    Seed: int;
+    IdentifierCache: Map<string, int>;
 
-let nextIdent =
-    Option.map <| fun level -> level + 1
+    Functions: Function list;
 
-let appendIdent level value =
-    match level with
-        | Some level -> sprintf "%s%s" (ident level) value
-        | None -> value
+    GlobalFunctions: Global list;
+    GlobalOperators: Global list;
+};
 
-let rec minimizeTreeLocalChildren expression =
-    match expression with
-        | BlockExpression [ExpressionStatement expression] -> expression
-        | BlockExpression statements ->
-            let unnest statements statement =
-                match statement with
-                    | ExpressionStatement (BlockExpression inner) -> List.concat [inner; statements]
-                    | statement -> statement :: statements
+type Project = {
+    Functions: Function list;
 
-            BlockExpression (statements |> Seq.rev |> Seq.fold unnest [])
+    GlobalFunctions: Global list;
+    GlobalOperators: Global list;
+};
 
-        | expression -> expression
+type Context = {
+    Compilation: Compilation;
+    Project: Project;
+};
 
-let indentifierToSqfIdentifier = sprintf "_%s"
+let defaultProject = {
+    Functions = [];
 
-let rec exprToSqf level expression =
-    let sublevel = nextIdent level
+    GlobalOperators = [];
+    GlobalFunctions = [];
+}
 
-    match expression with
-        | StringLiteralExpression literal -> sprintf "\"%s\"" <| escape literal
-        | NumberLiteralExpression literal -> literal
-        | VariableExpression identifier -> identifier
-        | ArrayExpression items -> sprintf "[%s]" (items |> List.map (exprToSqf sublevel) |> String.concat ",")
-        | GroupingExpression expr -> sprintf "(%s)" <| exprToSqf sublevel expr
-        | BinaryOperationExpression (left, right, operator) -> sprintf "%s %s %s" (exprToSqf sublevel left) operator (exprToSqf sublevel right)
-        | UnaryOperationExpression (right, operator) -> sprintf "%s %s" operator (exprToSqf sublevel right)
-        | BlockExpression block -> 
-            if block.Length <= 1 then
-                match List.tryHead block with
-                    | Some head -> sprintf "{ %s }" (statementToSqf None head)
-                    | None -> "{ }"
-            else
-                let print (items: string list) = 
-                    sprintf "{\n%s;\n%s}" (items |> String.concat ";\n") <|
-                        match level with
-                            | Some level -> ident level
-                            | None -> ""
+let random = System.Random()
 
-                print (block |> List.map (statementToSqf sublevel))
+let defaultContext project = {
+    Compilation = {
+        Monotonic = 0;
+        Seed = random.Next();
+        IdentifierCache = Map [];
 
-and statementToSqf (level: int option) (statement : SqfStatement) : string =
-    let sublevel = nextIdent level
+        Functions = [];
 
-    appendIdent level <|
-        match statement with
-            | ExpressionStatement expression -> exprToSqf sublevel expression
-            | AssignmentStatement (identifier, expression) ->
-                sprintf "%s = %s" identifier (exprToSqf sublevel expression)
-            | IfStatement (block, then_, else_) ->
-                match else_ with
-                    | Some else_ ->
-                        sprintf "if %s then %s else %s" (exprToSqf sublevel block) (exprToSqf sublevel then_) (exprToSqf sublevel else_)
-                    | None ->
-                        sprintf "if %s then %s" (exprToSqf sublevel block) (exprToSqf sublevel then_)
-            | WhileStatement (block, code) ->
-                sprintf "while %s do %s" (exprToSqf sublevel block) (exprToSqf sublevel block)
-            | ForStatement (identifier, from_, to_, code) ->
-                let orEmpty x =
-                    match x with | Some x -> x | None -> ""
+        GlobalFunctions = [];
+        GlobalOperators = [];
+    };
 
-                sprintf "for \"%s\" from %s to %s do %s"
-                    <| identifier
-                    <| (from_ |> Option.map (exprToSqf sublevel) |> orEmpty)
-                    <| (to_ |> Option.map (exprToSqf sublevel) |> orEmpty)
-                    <| exprToSqf sublevel code
-            | DeclarationStatement (kind, array) ->
-                sprintf "%s %s" <| kind <| exprToSqf sublevel array
-            | BreakStatement with_ ->
-                match with_ with
-                    | Some block -> sprintf "breakWith %s" <| exprToSqf sublevel block
-                    | None -> "break"
-            | ContinueStatement with_ ->
-                match with_ with
-                    | Some block -> sprintf "continueWith %s" <| exprToSqf sublevel block
-                    | None -> "continue"
-            | ExitStatement with_ ->
-                match with_ with
-                    | Some block -> sprintf "exitWith %s" <| exprToSqf sublevel block
-                    | None -> "exit"
+    Project = project;
+}
 
-type Context =
-    { Parent: Context option;
-    Variables: string list ref;
-    Functions: string list ref;
-    Gensym: int ref; }
+let parseAtom (value: string) =
+    if value.StartsWith '.' &&
+        value.StartsWith '0' &&
+        value.StartsWith '1' &&
+        value.StartsWith '2' &&
+        value.StartsWith '3' &&
+        value.StartsWith '4' &&
+        value.StartsWith '5' &&
+        value.StartsWith '6' &&
+        value.StartsWith '7' &&
+        value.StartsWith '8' &&
+        value.StartsWith '9' then
+        Number value
+    else
+        Identifier value
 
-    member this.Fork() =
-        { this with Variables = ref []; Functions = ref []; Parent = Some this }
+let updateFunctionBody (func: Function) newStatement =
+    { func with Generated = newStatement :: func.Generated }
 
-    member this.WrapSym(identifier: string) =
-        let value = this.Gensym.Value
+let isBuiltinAtom (atom: string) = atom.StartsWith ":"
 
-        this.Gensym.Value <- value + 1
+let contextHasFuncLocal context name =
+    context.Compilation.GlobalFunctions |> Seq.exists (fun func -> func.Name.Equals name)
 
-        sprintf "_%s%d" identifier value
+let contextHasFuncGlobal context name =
+    context.Project.GlobalFunctions |> Seq.exists (fun func -> func.Name.Equals name)
 
-    member this.ExistsFunction (name: string) =
-        this.Functions.Value |> List.exists name.Equals ||
-            match this.Parent with
-                | Some parent -> parent.ExistsFunction name
-                | None -> false
+let contextHasOperatorLocal context name =
+    context.Compilation.GlobalOperators |> Seq.exists (fun func -> func.Name.Equals name)
 
-    member this.ExistsVariableLocal (name: string) =
-        this.Variables.Value |> List.exists name.Equals
+let contextHasOperatorGlobal context name =
+    context.Project.GlobalOperators |> Seq.exists (fun func -> func.Name.Equals name)
 
-    member this.ExistsVariableGlobal (name: string) =
-        match this.Parent with
-            | Some parent -> parent.ExistsFunction name
-            | None -> this.ExistsVariableLocal name
+// beware: will throw an exception if not found
+let contextOperatorHasReceiver context name =
+    let functions = Seq.append context.Compilation.GlobalOperators context.Project.GlobalOperators
+    let func = functions |> Seq.find (fun func -> func.Name.Equals name)
+    func.Receiver
 
-let defaultContext () = { Context.Parent = None; Variables = ref []; Functions = ref []; Gensym = ref 0 }
-        
-exception MalformedQuotingException of string
+let updateMonotonicForAName compilation name =
+    if compilation.IdentifierCache.ContainsKey name then
+        compilation, compilation.IdentifierCache[name]
+    else
+        let cache = compilation.IdentifierCache.Add (name, compilation.Monotonic)
 
-exception MalformedBuiltinException of string
+        { compilation with Monotonic = compilation.Monotonic + 1; IdentifierCache = cache }, compilation.Monotonic
 
-exception MalformedCodegenException of string
+let getMonotonicName compilation name =
+    let compilation, id = updateMonotonicForAName compilation name
 
-let rec createFunctionCall (context: Context) (expr: SExpr list) param =
+    compilation, sprintf "_%d" id
+
+exception InvalidCallExpression of string
+
+exception InvalidArgsException of string
+
+let parseArgs (expr: SExpr list) =
+    let matchArg expr =
+        match expr with
+        | List (Atom name :: Atom type_ :: []) -> Typed (name, type_)
+        | List (Atom name :: []) -> Untyped name
+        | _ -> raise (InvalidArgsException "args are invalidly set up")
+
+    List.map matchArg expr
+
+let rec parseBuiltin (context: Context) (func: Function) (expr: SExpr list) =
     match expr with
-        | Atom identifier :: args ->
-            BinaryOperationExpression (
-                ArrayExpression (args |> List.map (convert context)),
-                VariableExpression identifier,
-                param
-            )
-        | _ -> raise (MalformedCodegenException "could not create function")
+        | Atom ":set" :: Atom name :: List expr :: [] ->
+            let compilation, name = getMonotonicName context.Compilation name
+            let context, func, expr = parseExpression { context with Compilation = compilation } func expr
+            context, func, Expression <| Binary ("=", Identifier name, expr)
+        | Atom ":define" :: Atom name :: List args :: List expr :: [] ->
+            let compilation, name = getMonotonicName context.Compilation name
 
-and convertBuiltin (context: Context) (expr: SExpr list) =
-    let convertNestedFunction = convert // preserve the default one
-    let convert expr = convert context expr
+            let compilation, innerFunc = parseStatementsIntoFunction { context with Compilation = compilation } { Name = name; Args = parseArgs args; Generated = [] } expr
 
+            { context with Compilation = { compilation with Functions = innerFunc :: compilation.Functions } }, func,
+                Expression <| Identifier name
+        | Atom ":lambda" :: List args :: List expr :: [] ->
+            let name = sprintf "lambda%d%d" context.Compilation.Seed context.Compilation.Monotonic
+
+            let compilation, innerFunc = parseStatementsIntoFunction { context with Compilation = { context.Compilation with Monotonic = context.Compilation.Monotonic + 1; }; } { Name = name; Args = parseArgs args; Generated = [] } expr
+
+            { context with Compilation = { compilation with Functions = innerFunc :: compilation.Functions } }, func,
+                Expression <| Identifier name
+and parseExpression (context: Context) (func: Function) (expr: SExpr list) =
     match expr with
-        | Atom ":set" :: items ->
-            match items with
-                | Atom identifier :: expr :: [] ->
-                    if not (context.ExistsVariableGlobal identifier) then
-                        context.Variables.Value <- identifier :: context.Variables.Value
+        | Atom identifier :: args when contextHasFuncLocal context identifier ->
+            let compilation, name = getMonotonicName context.Compilation identifier
 
-                    ExpressionStatement <| BlockExpression [
-                        DeclarationStatement ("private", ArrayExpression [StringLiteralExpression identifier]);
-                        AssignmentStatement (identifier, convert expr)
-                    ]
-                | _ -> raise (MalformedBuiltinException (sprintf "set should be of (!set name value) but is %s" (items.ToString())))
-        | Atom ":global" :: Atom identifier :: Literal actualIdentifier :: [] ->
-            context.Functions.Value <- identifier :: context.Functions.Value
-            
-            ExpressionStatement <| BlockExpression [
-                DeclarationStatement ("private", ArrayExpression [StringLiteralExpression identifier]);
-                AssignmentStatement (identifier, VariableExpression actualIdentifier)
-            ]
-        | Atom ":define" :: items ->
-            match items with
-                | Atom identifier :: List args :: body :: [] ->
-                    let args = args |> List.fold (fun a x -> match a with | None -> None | Some a -> match x with | Atom identifier -> Some (identifier :: a) | _ -> None) (Some [])
+            let context, func, expr = parseExpression { context with Compilation = compilation } func args
 
-                    match args with
-                        | Some args ->
-                            let definition = DeclarationStatement ("private", ArrayExpression (args |> List.map StringLiteralExpression))
+            context, func, Binary ("call", expr, Identifier name)
+        | Atom name :: args when contextHasFuncGlobal context name ->
+            let context, func, expr = parseExpression context func args
 
-                            let body =
-                                match convertNestedFunction (context.Fork()) body with 
-                                    | BlockExpression expression -> definition :: expression
-                                    | anything -> [definition; ExpressionStatement anything]
+            context, func, Binary ("call", expr, Identifier name)
+        | Atom identifier :: args when contextHasOperatorLocal context identifier ->
+            let compilation, name = getMonotonicName context.Compilation identifier
 
-                            context.Functions.Value <- identifier :: context.Functions.Value
+            let mutable context = { context with Compilation = compilation }
+            let mutable func = func
 
-                            AssignmentStatement (identifier, BlockExpression body)
-                        | None -> raise (MalformedBuiltinException (sprintf "def should be of (!def name var-list code) but is %s" (items.ToString())))
-                | _ -> raise (MalformedBuiltinException (sprintf "def should be of (!def name var-list code) but is %s" (items.ToString())))
-        | Atom ":if" :: items ->
-            match items with
-                | code :: then_ :: else_ :: [] -> IfStatement (convert code, convert then_, Some <| convert else_)
-                | code :: then_ :: [] -> IfStatement (convert code, convert then_, None)
-                | _ -> raise (MalformedBuiltinException "!if should be of (!if condition-code true-code false-code)")
-        | Atom ":for" :: items ->
-            match items with
-                | Atom identifier :: List (a :: a0 :: []) :: List (b :: b0 :: []) :: code :: [] ->
-                    let reorder a b =
-                        match a, b with | Atom "from", Atom "to" -> a0, b0 | _ -> b0, a0
+            let receiver, args =
+                if contextOperatorHasReceiver context identifier then
+                    if args.IsEmpty then
+                        Some <| Identifier "objNull", AstExpression.List <| AstList.List []
+                    else
+                        match Seq.tryHead args with
+                            | Some first ->
+                                let newContext, newFunc,  first = parseExpression context func [first]
+                                context <- newContext
+                                func <- newFunc
 
-                    let from_, to_ = reorder a b
-                    ForStatement (identifier, Some <| convert from_, Some <| convert to_, convert code)
-                | Atom identifier :: List (a :: a0 :: []) :: code :: [] ->
-                    let from_, to_ =
-                        match a with
-                            | Atom "from" -> Some <| convert a0, None
-                            | Atom "to" -> None, Some <| convert a0
+                                let newContext, newFunc, rest = parseExpression newContext func (List.skip 1 args)
+                                context <- newContext
+                                func <- newFunc
 
-                    ForStatement (identifier, from_, to_, convert code)
-
-                | _ -> raise (MalformedBuiltinException "!for should be of (!for condition-code (from expr) (to expr) code)")
-        | Atom ":while" :: items ->
-            match items with
-                | code :: then_ :: [] -> WhileStatement (convert code, convert then_)
-                | _ -> raise (MalformedBuiltinException "!while should be of (!while condition-code code)")
-        | Atom ":break" :: items ->
-            match items with
-                | code :: [] -> BreakStatement (Some (convert code))
-                | [] -> BreakStatement None
-                | _ -> raise (MalformedBuiltinException "break should be of (!break optional-code value)")
-        | Atom ":continue" :: items ->
-            match items with
-                | code :: [] -> ContinueStatement (Some (convert code))
-                | [] -> ContinueStatement None
-                | _ -> raise (MalformedBuiltinException "continue should be of (!continue optional-code value)")
-        | Atom ":exit" :: items ->
-            match items with
-                | code :: [] -> ExitStatement (Some (convert code))
-                | [] -> ExitStatement None
-                | _ -> raise (MalformedBuiltinException "exit should be of (!exit optional-code value)")
-        | Atom ":spawn" :: items -> ExpressionStatement <| createFunctionCall context items "spawn"
-        | Atom identifier :: _ -> raise (MalformedBuiltinException (sprintf "invalid builtin %s" identifier))
-        | _ -> raise (MalformedBuiltinException "invalid builtin construction")
-
-and convert (context: Context) (expr: SExpr) =
-    let convertBuiltin = convertBuiltin context
-    let convert = convert context
-
-    minimizeTreeLocalChildren <|
-    match expr with
-        | List (Atom identifier :: _ as builtin) when identifier.StartsWith ":" -> BlockExpression <| [convertBuiltin builtin]
-        | List (Atom identifier :: _ as self) when context.ExistsFunction identifier -> createFunctionCall context self "call"
-        // | List list -> BlockExpression <| (list |> List.fold (fun b x -> convert x |> convertBlockExpressionFolder b) [])
-        | List [] | Atom "nil" -> VariableExpression "objNull"
-        | List list -> BlockExpression <| List.map (fun x -> ExpressionStatement <| convert x) list
-        | Quote (List list) -> ArrayExpression (list |> List.map convert)
-        | Quote (Atom _) -> raise (MalformedQuotingException "quoting an atom does nothing")
-        | Literal literal -> StringLiteralExpression literal
-        | Atom atom ->
-            if atom.StartsWith '.' &&
-                atom.StartsWith '0' &&
-                atom.StartsWith '1' &&
-                atom.StartsWith '2' &&
-                atom.StartsWith '3' &&
-                atom.StartsWith '4' &&
-                atom.StartsWith '5' &&
-                atom.StartsWith '6' &&
-                atom.StartsWith '7' &&
-                atom.StartsWith '8' &&
-                atom.StartsWith '9' then
-                    NumberLiteralExpression atom
+                                Some first, rest
+                            | None -> None, AstExpression.List <| AstList.List []
                 else
-                    VariableExpression atom
+                    let newContext, newFunc, expression = parseExpression context func args
+                    context <- newContext
+                    func <- newFunc
 
-let public compile expr =
-    let expression = convert (defaultContext()) expr
+                    None, expression
+                
+        
+            context, func,
+                match receiver with
+                | Some receiver -> Binary (name, receiver, args)
+                | None -> Unary (name, args)
+        | Atom name :: args when contextHasOperatorGlobal context name ->
+            let mutable context = context
+            let mutable func = func
 
-    exprToSqf (Some 0) expression
+            let receiver, args =
+                if contextOperatorHasReceiver context name then
+                    if args.IsEmpty then
+                        Some <| Identifier "objNull", AstExpression.List <| AstList.List []
+                    else
+                        match Seq.tryHead args with
+                            | Some first ->
+                                let newContext, newFunc,  first = parseExpression context func [first]
+                                context <- newContext
+                                func <- newFunc
+
+                                let newContext, newFunc, rest = parseExpression newContext func (List.skip 1 args)
+                                context <- newContext
+                                func <- newFunc
+
+                                Some first, rest
+                            | None -> None, AstExpression.List <| AstList.List []
+                else
+                    let newContext, newFunc, expression = parseExpression context func args
+                    context <- newContext
+                    func <- newFunc
+
+                    None, expression
+                
+        
+            context, func,
+                match receiver with
+                | Some receiver -> Binary (name, receiver, args)
+                | None -> Unary (name, args)
+and parseStatement (context: Context) (func: Function) (expr: SExpr) =
+    match expr with
+        | List ((Atom name) :: rest) when isBuiltinAtom name ->
+            parseBuiltin context func rest
+        | Atom value
+        | Quote (Atom value) ->
+            context, func, AstStatement.Expression (Identifier value)
+        | List exprs ->
+            let context, func, expr = parseExpression context func exprs
+
+            context, func, Expression <| expr
+        | Quote (List exprs) ->
+            let context, func, expr = parseExpression context func exprs
+
+            context, func, Expression <| expr
+and parseStatementsIntoFunction (context: Context) (func: Function) (expr: SExpr list) =
+    match expr with
+        | [] -> context.Compilation, func
+        | statement :: rest ->
+            let context, func, expr = parseStatement context func statement
+            parseStatementsIntoFunction context { func with Generated = expr :: func.Generated } rest
+
+exception InvalidArgumentsException of string
+
+exception AlreadyDefinedException of string
+
+exception ShouldBeFunctionEcxception of string
+
+let parseBody (name: string) =
+    parseStatementsIntoFunction
+
+let parseDefinition (context: Context) (expr: SExpr) =
+    match expr with
+        | List (Atom identifier :: List arguments :: List statements :: []) ->
+            if Seq.append context.Project.Functions context.Compilation.Functions |> Seq.exists (fun func -> func.Name.Equals identifier) then
+                raise (AlreadyDefinedException (sprintf "function %s is already defined" identifier))
+            else
+                let compilation, func = parseBody identifier context { Name = identifier; Args = parseArgs arguments; Generated = []; } statements
+
+                { context with Compilation = { compilation with Functions = func :: context.Compilation.Functions } }
+
+let rec parseTopLevel (context: Context) (expr: SExpr list) : Context =
+    match expr with
+        | List (Atom "#define" :: definition :: []) :: rest -> 
+            parseTopLevel (parseDefinition context definition) rest
+        | [] -> context
+
+let parse (exprs : SExpr list) =
+    parseTopLevel (defaultContext defaultProject) exprs

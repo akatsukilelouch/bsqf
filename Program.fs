@@ -37,7 +37,7 @@ let inline start path =
                     | None ->
                         raise NoManifestException
 
-    Bsqf.Bootstrap.bootstrap (Bsqf.Configuration.parse manifest.FullName)
+    Bsqf.Bootstrap.bootstrap (Bsqf.Config.parse manifest.FullName)
 
 [<EntryPoint>]
 let main args =
