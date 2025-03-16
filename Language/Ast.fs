@@ -21,4 +21,15 @@ and AstExpression =
 and AstList =
     | List of AstExpression list
 
-type AstTree = AstStatement list
+type Ast = AstStatement list
+
+type Name = {
+    Identifier: string;
+    HasReceiver: bool;
+    IsFunction: bool;
+}
+
+type Function = {
+    Imports: Name seq;
+    Code: Ast;
+}

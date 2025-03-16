@@ -3,15 +3,27 @@ open Bsqf.Config
 open Bsqf.Ast
 open Bsqf.Lexer
 
-type Arg =
-    | Untyped of name: Identifier
-    | Typed of name: Identifier * type_: Identifier
+type GenSym = {
+    Monotonic: int
+    Table: Map<string, int>
+}
+
+let newGenSymName (gensym: GenSym byref) name =
+    let { Monotonic = m; Table = t } = gensym
+
+    gensym <- {
+        Monotonic = m + 1
+        Table = t.Add(name, m)
+    }
+
+    m
 
 type Function = {
     Name: Identifier;
-    Args: Arg list;
+    Args: string list;
+    Variables: string list;
 
-    Generated: AstTree;
+    mutable Generated: Ast;
 };
 
 type Global = {
@@ -20,36 +32,66 @@ type Global = {
 };
 
 type Compilation = {
-    Monotonic: int;
-    Seed: int;
-    IdentifierCache: Map<string, int>;
+    mutable Monotonic: int;
+    mutable Seed: int;
+    mutable IdentifierCache: Map<string, int>;
+    mutable Functions: Function list;
 
-    Functions: Function list;
+    mutable ImportedFunctions: Global list;
+};
 
-    GlobalFunctions: Global list;
-    GlobalOperators: Global list;
+type External = {
+    Functions: Global list;
+    Operators: Global list;
 };
 
 type Project = {
     Functions: Function list;
-
-    GlobalFunctions: Global list;
-    GlobalOperators: Global list;
+    External: External;
 };
 
 type Context = {
-    Compilation: Compilation;
+    mutable Compilation: Compilation;
     Project: Project;
 };
+
+let isAlreadyDefinedFunction (context: Context) name =
+    Seq.append context. context.Compilation.ImportedFunctions |> Seq.exists name.Equals
+
+let isOverridingOperator (context: Context) name =
+    let matches x =
+        x.Name.Equals name
+
+    context.Project.ExternalOperators |> List.exists (fun operator -> name.Equals operator.Name)
+
+let issueWarning str =
+    printf "warning: %s" str
+
+
+let issueError str =
+
+
+let processImport (context: Context ref) (import: string) =
+    let userFunction = context.Value.Project.Functions |> Seq.tryFind import.Equals
+
+    if userFunction.IsNone then
+        if Seq.append context.Value.Project.External.Functions context.Value.Project.External.Operators |> Seq.tryFind (fun x -> x.Name.Equals import) then
+            issueWarning "no need to import external functions"
+        else
+    else
+        true
+    
+
+    ()
 
 let defaultProject = {
     Functions = [];
 
-    GlobalOperators = [];
-    GlobalFunctions = [];
+    ExternalOperators = [];
+    ExternalFunctions = [];
 }
 
-let random = System.Random()
+let random = new System.Random()
 
 let defaultContext project = {
     Compilation = {
@@ -59,7 +101,7 @@ let defaultContext project = {
 
         Functions = [];
 
-        GlobalFunctions = [];
+        ImportedFunctions = [];
         GlobalOperators = [];
     };
 
@@ -88,20 +130,20 @@ let updateFunctionBody (func: Function) newStatement =
 let isBuiltinAtom (atom: string) = atom.StartsWith ":"
 
 let contextHasFuncLocal context name =
-    context.Compilation.GlobalFunctions |> Seq.exists (fun func -> func.Name.Equals name)
+    context.Compilation.ImportedFunctions |> Seq.exists (fun func -> func.Name.Equals name)
 
 let contextHasFuncGlobal context name =
-    context.Project.GlobalFunctions |> Seq.exists (fun func -> func.Name.Equals name)
+    context.Project.ExternalFunctions |> Seq.exists (fun func -> func.Name.Equals name)
 
 let contextHasOperatorLocal context name =
     context.Compilation.GlobalOperators |> Seq.exists (fun func -> func.Name.Equals name)
 
 let contextHasOperatorGlobal context name =
-    context.Project.GlobalOperators |> Seq.exists (fun func -> func.Name.Equals name)
+    context.Project.ExternalOperators |> Seq.exists (fun func -> func.Name.Equals name)
 
 // beware: will throw an exception if not found
 let contextOperatorHasReceiver context name =
-    let functions = Seq.append context.Compilation.GlobalOperators context.Project.GlobalOperators
+    let functions = Seq.append context.Compilation.GlobalOperators context.Project.ExternalOperators
     let func = functions |> Seq.find (fun func -> func.Name.Equals name)
     func.Receiver
 
@@ -262,9 +304,9 @@ exception ShouldBeFunctionEcxception of string
 let parseBody (name: string) =
     parseStatementsIntoFunction
 
-let parseDefinition (context: Context) (expr: SExpr) =
+let processDefinition (context: Context ref) (expr: SExpr list) =
     match expr with
-        | List (Atom identifier :: List arguments :: List statements :: []) ->
+        | Atom identifier :: List arguments :: List statements :: [] ->
             if Seq.append context.Project.Functions context.Compilation.Functions |> Seq.exists (fun func -> func.Name.Equals identifier) then
                 raise (AlreadyDefinedException (sprintf "function %s is already defined" identifier))
             else
@@ -272,11 +314,22 @@ let parseDefinition (context: Context) (expr: SExpr) =
 
                 { context with Compilation = { compilation with Functions = func :: context.Compilation.Functions } }
 
-let rec parseTopLevel (context: Context) (expr: SExpr list) : Context =
+let rec parseTopLevel (context: Context ref) (expr: SExpr list) =
     match expr with
-        | List (Atom "#define" :: definition :: []) :: rest -> 
-            parseTopLevel (parseDefinition context definition) rest
+        | [] -> ()
+        | item :: rest ->
+            match item with
+                | List (Atom "#import" :: Atom name :: []) -> 
+                    processImport context name
+                | List (Atom "#define" :: Atom name :: body) ->
+                    processDefinition context expr
+                    
         | [] -> context
+            parseTopLevel context rest
 
-let parse (exprs : SExpr list) =
-    parseTopLevel (defaultContext defaultProject) exprs
+    parseTopLevel context rest
+
+let parse (expr : SExpr list) =
+    let context = ref <| defaultContext defaultProject
+
+    parseTopLevel context expr
