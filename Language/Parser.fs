@@ -2,334 +2,183 @@ module Bsqf.Parser
 open Bsqf.Config
 open Bsqf.Ast
 open Bsqf.Lexer
+open FParsec
 
-type GenSym = {
-    Monotonic: int
-    Table: Map<string, int>
-}
+exception ParseException of Position * string
 
-let newGenSymName (gensym: GenSym byref) name =
-    let { Monotonic = m; Table = t } = gensym
+let fail position reason =
+    raise <| ParseException (position, reason)
 
-    gensym <- {
-        Monotonic = m + 1
-        Table = t.Add(name, m)
-    }
+let rec parseSimpleLiteralAtom ((position, value): SExpr) =
+    match value with
+        | Atom value -> value
+        | _ -> raise <| ParseException (position, "expected atom, probably a number")
 
-    m
+let isANumberLiteral (str: string) =
+    isDigit (str.Chars 0)
 
-type Function = {
-    Name: Identifier;
-    Args: string list;
-    Variables: string list;
+let rec parseExpression ((position, value): SExpr) : AstExpression =
+    match value with
+        | List ((_, Atom ":if") :: defs) ->
+            let condition, then_, else_ =
+                match defs with
+                    | condition :: then_ :: [] -> 
+                        condition, then_, None
+                    | condition :: then_ :: else_ :: [] -> 
+                        condition, then_, Some else_
+                    | (position, _) :: _ -> 
+                        fail position "expecting a condition clause and a code clause"
+                    | [] -> 
+                        fail position "unexpected empty if clause"
 
-    mutable Generated: Ast;
-};
+            position, AstExpressionValue.If (parseExpression condition, parseExpression then_, else_ |> Option.map parseExpression)
+        | List ((_, Atom ":for-each") :: defs) -> 
+            let element, list, body =
+                match defs with
+                    | (_, List ((_, Atom element) :: list :: [])) :: body :: [] ->
+                        element, list, body
+                    | (position, _) :: _ ->
+                        fail position "for-each binding requires binding a variable from a list in the form of (element list)"
+                    | [] ->
+                        fail position "for-each binding requires binding a variable from a list in the form of (element list)"
 
-type Global = {
-    Name: Identifier;
-    Receiver: bool;
-};
+            position, AstExpressionValue.ForEach (element, parseExpression list, parseExpression body)
+        | Quote (_, List list)  ->
+            let rec parseList items defs =
+                match defs with
+                    | expr :: left ->
+                        parseList (parseExpression expr :: items) left
+                    | [] ->
+                        items
+            
+            position, AstExpressionValue.List (parseList [] list)
+        | Quote _ ->
+            fail position "you may only quote lists to create lists"
+        | Atom name when not (isANumberLiteral name) -> 
+            position, Identifier name
+        | Atom number -> 
+            position, Number number
+        | Literal literal ->
+            position, String literal
+        | List ((_, Atom func) :: args) ->
+            position, AstExpressionValue.Call (func, args |> List.map parseExpression)
+        | List inner ->
+            position, AstExpressionValue.Block (parseStatements [] inner)
 
-type Compilation = {
-    mutable Monotonic: int;
-    mutable Seed: int;
-    mutable IdentifierCache: Map<string, int>;
-    mutable Functions: Function list;
+and parseStatement ((position, value): SExpr) =
+    match value with
+        | List ((_, Atom ":for") :: defs) -> 
+            let rec getForDefs (from_, to_, step) (defs: SExpr list) =
+                match defs with
+                    | (_, List ((_, Atom "from") :: from_ :: [])) :: defs ->
+                        getForDefs (Some <| parseSimpleLiteralAtom from_, to_, step) defs
+                    | (_, List ((_, Atom "to") :: to_ :: [])) :: defs ->
+                        getForDefs (from_, Some <| parseSimpleLiteralAtom to_, step) defs
+                    | (_, List ((_, Atom "step") :: step :: [])) :: defs ->
+                        getForDefs (from_, to_, Some <| parseSimpleLiteralAtom step) defs
+                    | (_, List code) :: [] ->
+                        from_, to_, step, code
+                    | (position, _) :: [] ->
+                        fail position "expected code"
+                    | (position, _) :: _ ->
+                        fail position "expected either a from, to or step binding"
+                    | [] ->
+                        fail position "unexpected empty for clause"
 
-    mutable ImportedFunctions: Global list;
-};
+            match defs with
+                | (_, Atom identifier) :: defs ->
+                    let from_, to_, step, code = getForDefs (None, None, None) defs
 
-type External = {
-    Functions: Global list;
-    Operators: Global list;
-};
+                    position, AstStatementValue.For (identifier, from_, to_, step, parseStatements [] code)
+                | (position, _) :: _ ->
+                    fail position "excepted a for binding identifier that is an atom"
+                | [] -> 
+                    fail position "excepted a for binding identifier"
 
-type Project = {
-    Functions: Function list;
-    External: External;
-};
+        | List ((_, Atom ":while") :: defs) ->
+            let condition, code =
+                match defs with
+                    | condition :: (_, List code) :: [] -> 
+                        condition, code
+                    | (position, _) :: _ -> 
+                        fail position "expecting a condition clause and a code clause"
+                    | [] -> 
+                        fail position "unexpected empty while clause"
 
-type Context = {
-    mutable Compilation: Compilation;
-    Project: Project;
-};
+            position, AstStatementValue.While (parseExpression condition, parseStatements [] code)
+        | List ((_, Atom ":break") :: defs) ->
+            let with_ =
+                match defs with
+                    | code :: [] -> Some code
+                    | [] -> None
+                    | (position, _) :: _ ->
+                        fail position "expected exit-with expression or no clause at all"
 
-let isAlreadyDefinedFunction (context: Context) name =
-    Seq.append context. context.Compilation.ImportedFunctions |> Seq.exists name.Equals
+            position, AstStatementValue.Break (with_ |> Option.map parseExpression)
+        | List ((_, Atom ":continue") :: defs) ->
+            let with_ =
+                match defs with
+                    | code :: [] -> Some code
+                    | [] -> None
+                    | (position, _) :: _ ->
+                        fail position "expected exit-with expression or no clause at all"
 
-let isOverridingOperator (context: Context) name =
-    let matches x =
-        x.Name.Equals name
+            position, AstStatementValue.Continue (with_ |> Option.map parseExpression)
+        | List ((_, Atom ":exit") :: defs) ->
+            let with_ =
+                match defs with
+                    | code :: [] -> Some code
+                    | [] -> None
+                    | (position, _) :: _ ->
+                        fail position "expected exit-with expression or no clause at all"
 
-    context.Project.ExternalOperators |> List.exists (fun operator -> name.Equals operator.Name)
-
-let issueWarning str =
-    printf "warning: %s" str
-
-
-let issueError str =
-
-
-let processImport (context: Context ref) (import: string) =
-    let userFunction = context.Value.Project.Functions |> Seq.tryFind import.Equals
-
-    if userFunction.IsNone then
-        if Seq.append context.Value.Project.External.Functions context.Value.Project.External.Operators |> Seq.tryFind (fun x -> x.Name.Equals import) then
-            issueWarning "no need to import external functions"
-        else
-    else
-        true
-    
-
-    ()
-
-let defaultProject = {
-    Functions = [];
-
-    ExternalOperators = [];
-    ExternalFunctions = [];
-}
-
-let random = new System.Random()
-
-let defaultContext project = {
-    Compilation = {
-        Monotonic = 0;
-        Seed = random.Next();
-        IdentifierCache = Map [];
-
-        Functions = [];
-
-        ImportedFunctions = [];
-        GlobalOperators = [];
-    };
-
-    Project = project;
-}
-
-let parseAtom (value: string) =
-    if value.StartsWith '.' &&
-        value.StartsWith '0' &&
-        value.StartsWith '1' &&
-        value.StartsWith '2' &&
-        value.StartsWith '3' &&
-        value.StartsWith '4' &&
-        value.StartsWith '5' &&
-        value.StartsWith '6' &&
-        value.StartsWith '7' &&
-        value.StartsWith '8' &&
-        value.StartsWith '9' then
-        Number value
-    else
-        Identifier value
-
-let updateFunctionBody (func: Function) newStatement =
-    { func with Generated = newStatement :: func.Generated }
-
-let isBuiltinAtom (atom: string) = atom.StartsWith ":"
-
-let contextHasFuncLocal context name =
-    context.Compilation.ImportedFunctions |> Seq.exists (fun func -> func.Name.Equals name)
-
-let contextHasFuncGlobal context name =
-    context.Project.ExternalFunctions |> Seq.exists (fun func -> func.Name.Equals name)
-
-let contextHasOperatorLocal context name =
-    context.Compilation.GlobalOperators |> Seq.exists (fun func -> func.Name.Equals name)
-
-let contextHasOperatorGlobal context name =
-    context.Project.ExternalOperators |> Seq.exists (fun func -> func.Name.Equals name)
-
-// beware: will throw an exception if not found
-let contextOperatorHasReceiver context name =
-    let functions = Seq.append context.Compilation.GlobalOperators context.Project.ExternalOperators
-    let func = functions |> Seq.find (fun func -> func.Name.Equals name)
-    func.Receiver
-
-let updateMonotonicForAName compilation name =
-    if compilation.IdentifierCache.ContainsKey name then
-        compilation, compilation.IdentifierCache[name]
-    else
-        let cache = compilation.IdentifierCache.Add (name, compilation.Monotonic)
-
-        { compilation with Monotonic = compilation.Monotonic + 1; IdentifierCache = cache }, compilation.Monotonic
-
-let getMonotonicName compilation name =
-    let compilation, id = updateMonotonicForAName compilation name
-
-    compilation, sprintf "_%d" id
-
-exception InvalidCallExpression of string
-
-exception InvalidArgsException of string
-
-let parseArgs (expr: SExpr list) =
-    let matchArg expr =
-        match expr with
-        | List (Atom name :: Atom type_ :: []) -> Typed (name, type_)
-        | List (Atom name :: []) -> Untyped name
-        | _ -> raise (InvalidArgsException "args are invalidly set up")
-
-    List.map matchArg expr
-
-let rec parseBuiltin (context: Context) (func: Function) (expr: SExpr list) =
+            position, AstStatementValue.Exit (with_ |> Option.map parseExpression)
+        | otherwise ->
+            position, AstStatementValue.Expression (parseExpression (position, otherwise))
+and parseStatements (statements : AstStatement list) (expr: SExpr list) =
+    match expr with 
+        | left :: right ->
+            parseStatements (parseStatement left :: statements) right
+        | [] ->
+            statements
+let rec parseTopLevel (tree: AstTopLevel list) (expr: SExpr list) =
     match expr with
-        | Atom ":set" :: Atom name :: List expr :: [] ->
-            let compilation, name = getMonotonicName context.Compilation name
-            let context, func, expr = parseExpression { context with Compilation = compilation } func expr
-            context, func, Expression <| Binary ("=", Identifier name, expr)
-        | Atom ":define" :: Atom name :: List args :: List expr :: [] ->
-            let compilation, name = getMonotonicName context.Compilation name
-
-            let compilation, innerFunc = parseStatementsIntoFunction { context with Compilation = compilation } { Name = name; Args = parseArgs args; Generated = [] } expr
-
-            { context with Compilation = { compilation with Functions = innerFunc :: compilation.Functions } }, func,
-                Expression <| Identifier name
-        | Atom ":lambda" :: List args :: List expr :: [] ->
-            let name = sprintf "lambda%d%d" context.Compilation.Seed context.Compilation.Monotonic
-
-            let compilation, innerFunc = parseStatementsIntoFunction { context with Compilation = { context.Compilation with Monotonic = context.Compilation.Monotonic + 1; }; } { Name = name; Args = parseArgs args; Generated = [] } expr
-
-            { context with Compilation = { compilation with Functions = innerFunc :: compilation.Functions } }, func,
-                Expression <| Identifier name
-and parseExpression (context: Context) (func: Function) (expr: SExpr list) =
-    match expr with
-        | Atom identifier :: args when contextHasFuncLocal context identifier ->
-            let compilation, name = getMonotonicName context.Compilation identifier
-
-            let context, func, expr = parseExpression { context with Compilation = compilation } func args
-
-            context, func, Binary ("call", expr, Identifier name)
-        | Atom name :: args when contextHasFuncGlobal context name ->
-            let context, func, expr = parseExpression context func args
-
-            context, func, Binary ("call", expr, Identifier name)
-        | Atom identifier :: args when contextHasOperatorLocal context identifier ->
-            let compilation, name = getMonotonicName context.Compilation identifier
-
-            let mutable context = { context with Compilation = compilation }
-            let mutable func = func
-
-            let receiver, args =
-                if contextOperatorHasReceiver context identifier then
-                    if args.IsEmpty then
-                        Some <| Identifier "objNull", AstExpression.List <| AstList.List []
-                    else
-                        match Seq.tryHead args with
-                            | Some first ->
-                                let newContext, newFunc,  first = parseExpression context func [first]
-                                context <- newContext
-                                func <- newFunc
-
-                                let newContext, newFunc, rest = parseExpression newContext func (List.skip 1 args)
-                                context <- newContext
-                                func <- newFunc
-
-                                Some first, rest
-                            | None -> None, AstExpression.List <| AstList.List []
-                else
-                    let newContext, newFunc, expression = parseExpression context func args
-                    context <- newContext
-                    func <- newFunc
-
-                    None, expression
-                
-        
-            context, func,
-                match receiver with
-                | Some receiver -> Binary (name, receiver, args)
-                | None -> Unary (name, args)
-        | Atom name :: args when contextHasOperatorGlobal context name ->
-            let mutable context = context
-            let mutable func = func
-
-            let receiver, args =
-                if contextOperatorHasReceiver context name then
-                    if args.IsEmpty then
-                        Some <| Identifier "objNull", AstExpression.List <| AstList.List []
-                    else
-                        match Seq.tryHead args with
-                            | Some first ->
-                                let newContext, newFunc,  first = parseExpression context func [first]
-                                context <- newContext
-                                func <- newFunc
-
-                                let newContext, newFunc, rest = parseExpression newContext func (List.skip 1 args)
-                                context <- newContext
-                                func <- newFunc
-
-                                Some first, rest
-                            | None -> None, AstExpression.List <| AstList.List []
-                else
-                    let newContext, newFunc, expression = parseExpression context func args
-                    context <- newContext
-                    func <- newFunc
-
-                    None, expression
-                
-        
-            context, func,
-                match receiver with
-                | Some receiver -> Binary (name, receiver, args)
-                | None -> Unary (name, args)
-and parseStatement (context: Context) (func: Function) (expr: SExpr) =
-    match expr with
-        | List ((Atom name) :: rest) when isBuiltinAtom name ->
-            parseBuiltin context func rest
-        | Atom value
-        | Quote (Atom value) ->
-            context, func, AstStatement.Expression (Identifier value)
-        | List exprs ->
-            let context, func, expr = parseExpression context func exprs
-
-            context, func, Expression <| expr
-        | Quote (List exprs) ->
-            let context, func, expr = parseExpression context func exprs
-
-            context, func, Expression <| expr
-and parseStatementsIntoFunction (context: Context) (func: Function) (expr: SExpr list) =
-    match expr with
-        | [] -> context.Compilation, func
-        | statement :: rest ->
-            let context, func, expr = parseStatement context func statement
-            parseStatementsIntoFunction context { func with Generated = expr :: func.Generated } rest
-
-exception InvalidArgumentsException of string
-
-exception AlreadyDefinedException of string
-
-exception ShouldBeFunctionEcxception of string
-
-let parseBody (name: string) =
-    parseStatementsIntoFunction
-
-let processDefinition (context: Context ref) (expr: SExpr list) =
-    match expr with
-        | Atom identifier :: List arguments :: List statements :: [] ->
-            if Seq.append context.Project.Functions context.Compilation.Functions |> Seq.exists (fun func -> func.Name.Equals identifier) then
-                raise (AlreadyDefinedException (sprintf "function %s is already defined" identifier))
-            else
-                let compilation, func = parseBody identifier context { Name = identifier; Args = parseArgs arguments; Generated = []; } statements
-
-                { context with Compilation = { compilation with Functions = func :: context.Compilation.Functions } }
-
-let rec parseTopLevel (context: Context ref) (expr: SExpr list) =
-    match expr with
-        | [] -> ()
-        | item :: rest ->
+        | (position, List item) :: rest ->
             match item with
-                | List (Atom "#import" :: Atom name :: []) -> 
-                    processImport context name
-                | List (Atom "#define" :: Atom name :: body) ->
-                    processDefinition context expr
-                    
-        | [] -> context
-            parseTopLevel context rest
+                | (_, Atom "#import") :: (_, Atom name) :: [] -> 
+                    Import name :: tree
+                | (_, Atom "#define") :: (_, Atom name) :: item :: [] -> 
+                    Definition (name, [parseStatement item]) :: tree
+                | (_, Atom "#define") :: (_, Atom name) :: body -> 
+                    Definition (name, parseStatements [] body) :: tree
+                | _ ->
+                    fail position "a top-level entry should start with a built-in function #import or a #define"
+        | (position, _) :: _ ->
+            fail position "a top-level entry should be either an import or a define macro call"
+        | [] ->
+            tree
 
-    parseTopLevel context rest
-
+/// The parse routine takes the raw expression and gives out the AST that
+/// embodies the actual code to be spewed out later in the pipeline.
+/// 
+/// At this point we just transform the S-expressions into more manageable AST form
+/// which is later analyzed for excess variables, get rid of local variable names (minified),
+/// analyzed for module imports and such.
+/// 
+/// Before this code contains module definitions but I think it is very hard to nagivate it this way.
+/// 
+/// <h1>Core components</h1>
+/// 
+/// The language consists of a few superset features such as lambda functions, definitions, imports and exports.
+/// (These features are absent in the SQF language.)
+///
+/// They make room for better code coupling.
+/// 
+/// <h2>Context</h2>
+/// 
+/// The context is created locally for the parse run and then returned from the function.
+/// This context is later to be analyzed and compiled. At this point it is just better to use
+/// mapping table for compilation.
 let parse (expr : SExpr list) =
-    let context = ref <| defaultContext defaultProject
-
-    parseTopLevel context expr
+    // call the recursive function
+    parseTopLevel [] expr

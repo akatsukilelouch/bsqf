@@ -1,4 +1,5 @@
 module Bsqf.Bootstrap
+open Bsqf.Lexer
 open System.IO
 
 type Module = {
@@ -10,12 +11,17 @@ type Context = {
     mutable Modules: Map<string, Module>;
 }
 
+exception InvalidFileException of string
+
 let resolve (config: Config.FileConfig) (context: Context) (entry: Module) =
     let lexed = Lexer.lexFile entry.Path.FullName
 
-    match lexed with
-    | Bsqf.Lexer.List lexed -> printf "%s" <| (Parser.parse lexed).ToString()
-    | e -> printf "%s" (e.ToString())
+    let ast =
+        match lexed with
+            | _, List inner -> Parser.parse inner
+            | _ -> raise <| InvalidFileException "file should be a list"
+
+    printf "%s" (ast.ToString())
 
 
 let public bootstrap (config: Config.FileConfig) =
