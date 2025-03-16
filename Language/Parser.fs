@@ -18,6 +18,12 @@ let isANumberLiteral (str: string) =
     isDigit (str.Chars 0)
 
 let rec parseExpression ((position, value): SExpr) : AstExpression =
+    let isANumber (x: string) =
+        let mutable _tmp: double = 0
+
+        System.Double.TryParse(x, &_tmp)
+
+
     match value with
         | List ((_, Atom ":if") :: defs) ->
             let condition, then_, else_ =
@@ -54,9 +60,9 @@ let rec parseExpression ((position, value): SExpr) : AstExpression =
             position, AstExpressionValue.List (parseList [] list)
         | Quote _ ->
             fail position "you may only quote lists to create lists"
-        | Atom name when not (isANumberLiteral name) -> 
+        | Atom name when not (isANumberLiteral name || name.StartsWith ":")-> 
             position, Identifier name
-        | Atom number -> 
+        | Atom number when isANumber number ->
             position, Number number
         | Literal literal ->
             position, String literal
@@ -64,7 +70,8 @@ let rec parseExpression ((position, value): SExpr) : AstExpression =
             position, AstExpressionValue.Call (func, args |> List.map parseExpression)
         | List inner ->
             position, AstExpressionValue.Block (parseStatements [] inner)
-
+        | _ -> 
+            fail position "expected an expression"
 and parseStatement ((position, value): SExpr) =
     match value with
         | List ((_, Atom ":for") :: defs) -> 
@@ -161,6 +168,10 @@ let rec parseTopLevel (tree: AstTopLevel list) (expr: SExpr list) =
         | [] ->
             tree |> List.rev
 
+type ParseResult =
+    | Ok of AstTopLevel list
+    | Error of position: Position * message: string
+
 /// The parse routine takes the raw expression and gives out the AST that
 /// embodies the actual code to be spewed out later in the pipeline.
 /// 
@@ -184,4 +195,7 @@ let rec parseTopLevel (tree: AstTopLevel list) (expr: SExpr list) =
 /// mapping table for compilation.
 let parse (expr : SExpr list) =
     // call the recursive function
-    parseTopLevel [] expr
+    try Ok <| parseTopLevel [] expr
+    with
+        | ParseException (position, error) -> Error (position, error)
+        | error -> raise error

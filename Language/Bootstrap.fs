@@ -14,7 +14,9 @@ type Context = {
 exception InvalidFileException of string
 
 let resolve (config: Config.FileConfig) (context: Context) (entry: Module) =
-    let lexed = Lexer.lexFile entry.Path.FullName
+    let buffer = File.ReadAllText entry.Path.FullName
+
+    let lexed = Lexer.lex buffer
 
     match lexed with
         | Lexed lexed -> 
@@ -23,7 +25,28 @@ let resolve (config: Config.FileConfig) (context: Context) (entry: Module) =
                     | _, List inner -> Parser.parse inner
                     | _ -> raise <| InvalidFileException "file should be a list"
 
-            printf "%s\n" (ast.ToString())
+            match ast with
+                | Parser.ParseResult.Ok tree -> 
+                    printf "%s\n" (tree.ToString())
+                | Parser.ParseResult.Error (position, error) ->
+                    let rec findLineOffset (buffer: string) (index: int) =
+                        if (buffer.Chars (index - 1)).Equals '\n' then
+                            index
+                        else
+                            findLineOffset buffer (index - 1)
+
+                    let findLineEnd (buffer: string) (offset: int) =
+                        buffer[offset ..].IndexOf('\n') + offset
+
+                    let lineStart = findLineOffset buffer (int position.Index)
+                    let lineEnd = findLineEnd buffer lineStart
+
+                    let localOffset = (int position.Index) - lineStart
+                    let lineSlice = if not (lineEnd.Equals -1) then buffer[lineStart..lineEnd] else buffer[lineStart..]
+                    let errorShower = new string(' ', localOffset) + "^"
+
+                    printf "%s:%d:%d: %s\n\t%s\n\t%s\n" entry.Path.FullName position.Line position.Column error lineSlice errorShower
+
         | Error error ->
             printf "%s:%d:%d: %s\n" entry.Path.FullName error.Position.Line error.Position.Column (error.ToString())
 
