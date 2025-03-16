@@ -21,22 +21,23 @@ let private literal =
     between <| skipChar '"' <| skipChar '"' <| (getPosition .>>. manyChars (attempt (pchar '\\' >>. pchar '"') <|> noneOf ['"'])) |>> positioned Literal
 
 let private quote parser =
-    skipChar '`' >>. (getPosition .>>. parser) |>> positioned Quote
+    skipChar ''' >>. (getPosition .>>. parser) |>> positioned Quote
 
-#nowarn 40
 let rec private list: CharStream<unit> -> Reply<SExpr> =
     let parenthesized = between (skipChar '(') (skipChar ')')
 
     let self x = list x
 
-    getPosition .>>. parenthesized (between spaces spaces <| sepEndBy (attempt literal <|> attempt atom <|> attempt (quote self) <|> attempt self) spaces) |>> positioned List
+    getPosition .>>. parenthesized (between spaces spaces <| sepEndBy (attempt (quote self) <|> attempt literal <|> attempt atom <|> attempt self) spaces) |>> positioned List
 
-exception ParsingErrorException of string
+type Result =
+    | Lexed of SExpr
+    | Error of ParserError
 
-let public lex buffer : SExpr =
-    match run list buffer with 
-        | Success (result, _, _) -> result
-        | Failure (_, parserError, _) -> raise (ParsingErrorException (parserError.ToString()))
+let public lex buffer =
+    match run list buffer with
+        | Success (lexed, _, _) -> Lexed lexed
+        | Failure (_, error, _) -> Error error
 
 let public lexFile path =
     File.ReadAllText path |> lex

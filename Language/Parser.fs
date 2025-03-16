@@ -49,7 +49,7 @@ let rec parseExpression ((position, value): SExpr) : AstExpression =
                     | expr :: left ->
                         parseList (parseExpression expr :: items) left
                     | [] ->
-                        items
+                        items |> List.rev
             
             position, AstExpressionValue.List (parseList [] list)
         | Quote _ ->
@@ -140,23 +140,26 @@ and parseStatements (statements : AstStatement list) (expr: SExpr list) =
         | left :: right ->
             parseStatements (parseStatement left :: statements) right
         | [] ->
-            statements
+            statements |> List.rev
 let rec parseTopLevel (tree: AstTopLevel list) (expr: SExpr list) =
     match expr with
         | (position, List item) :: rest ->
-            match item with
-                | (_, Atom "#import") :: (_, Atom name) :: [] -> 
-                    Import name :: tree
-                | (_, Atom "#define") :: (_, Atom name) :: item :: [] -> 
-                    Definition (name, [parseStatement item]) :: tree
-                | (_, Atom "#define") :: (_, Atom name) :: body -> 
-                    Definition (name, parseStatements [] body) :: tree
-                | _ ->
-                    fail position "a top-level entry should start with a built-in function #import or a #define"
+            let newTree =
+                match item with
+                    | (_, Atom "#import") :: (_, Atom name) :: [] -> 
+                        Import name :: tree
+                    | (_, Atom "#define") :: (_, Atom name) :: item :: [] -> 
+                        Definition (name, [parseStatement item]) :: tree
+                    | (_, Atom "#define") :: (_, Atom name) :: body -> 
+                        Definition (name, parseStatements [] body) :: tree
+                    | _ ->
+                        fail position "a top-level entry should start with a built-in function #import or a #define"
+
+            parseTopLevel newTree rest
         | (position, _) :: _ ->
             fail position "a top-level entry should be either an import or a define macro call"
         | [] ->
-            tree
+            tree |> List.rev
 
 /// The parse routine takes the raw expression and gives out the AST that
 /// embodies the actual code to be spewed out later in the pipeline.
