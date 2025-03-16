@@ -43,6 +43,8 @@ let rec parseExpression ((position, value): SExpr) : AstExpression =
                 match defs with
                     | (_, List ((_, Atom element) :: list :: [])) :: body :: [] ->
                         element, list, body
+                    | (position, List _) :: [] ->
+                        fail position "expected code after binding"
                     | (position, _) :: _ ->
                         fail position "for-each binding requires binding a variable from a list in the form of (element list)"
                     | [] ->
@@ -140,6 +142,16 @@ and parseStatement ((position, value): SExpr) =
                         fail position "expected exit-with expression or no clause at all"
 
             position, AstStatementValue.Exit (with_ |> Option.map parseExpression)
+        | List ((_, Atom ":set") :: defs) ->
+            let (name, expr) =
+                match defs with
+                    | (_, Atom name) :: code :: [] -> name, code
+                    | (position, _) :: _ ->
+                        fail position "expected a name and an expression"
+                    | [] ->
+                        fail position "expected a name and an expression"
+
+            position, AstStatementValue.Set (name, parseExpression expr)
         | otherwise ->
             position, AstStatementValue.Expression (parseExpression (position, otherwise))
 and parseStatements (statements : AstStatement list) (expr: SExpr list) =
@@ -153,16 +165,49 @@ let rec parseTopLevel (tree: AstTopLevel list) (expr: SExpr list) =
         | (position, List item) :: rest ->
             let newTree =
                 match item with
-                    | (_, Atom "#import") :: (_, Atom name) :: [] -> 
-                        Import name :: tree
+                    | (_, Atom "#module") :: defs ->
+                        let name =
+                            match defs with
+                                | (_, Atom name) :: [] -> name
+                                | (position, _) :: _ ->
+                                    fail position "expected module name"
+                                | _ ->
+                                    fail position "expected module name"
+
+                        Module name
+                    | (_, Atom "#declare") :: defs ->
+                        let declare =
+                            match defs with
+                                | (_, Atom "function") :: (_, Literal name) :: [] -> Function name
+                                | (_, Atom "operator") :: (_, Literal name) :: [] -> AstDeclare.Operator (name, false)
+                                | (_, Atom "method") :: (_, Literal name) :: [] -> AstDeclare.Operator (name, true)
+                                | (position, _) :: _ ->
+                                    fail position "expected function, operator or method and a name"
+                                | _ ->
+                                    fail position "expected function, operator or method and a name"
+
+                        Declare declare
+                    | (_, Atom "#import") :: defs -> 
+                        let name, items =
+                            match defs with
+                                | (_, Atom name) :: [] ->
+                                    name, []
+                                | (_, Atom name) :: (_, List items) :: [] ->
+                                    name, items
+                                | (position, _) :: _ ->
+                                    fail position "expected module name"
+                                | [] ->
+                                    fail position "expected module name"
+                        
+                        Import (name, items |> List.map parseSimpleLiteralAtom)
                     | (_, Atom "#define") :: (_, Atom name) :: item :: [] -> 
-                        Definition (name, [parseStatement item]) :: tree
+                        Definition (name, [parseStatement item])
                     | (_, Atom "#define") :: (_, Atom name) :: body -> 
-                        Definition (name, parseStatements [] body) :: tree
+                        Definition (name, parseStatements [] body)
                     | _ ->
                         fail position "a top-level entry should start with a built-in function #import or a #define"
 
-            parseTopLevel newTree rest
+            parseTopLevel (newTree :: tree) rest
         | (position, _) :: _ ->
             fail position "a top-level entry should be either an import or a define macro call"
         | [] ->

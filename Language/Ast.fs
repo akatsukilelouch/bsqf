@@ -10,6 +10,7 @@ type AstStatementValue =
     | Break of with_: AstExpression option
     | Continue of with_: AstExpression option
     | Exit of with_: AstExpression option
+    | Set of name: Identifier * value: AstExpression
 and AstStatement = Position * AstStatementValue
 and AstExpressionValue =
     | Number of string
@@ -24,21 +25,15 @@ and AstExpression = Position * AstExpressionValue
 
 type AstTree = AstStatement list
 
+type AstDeclare =
+    | Function of name: Identifier
+    | Operator of name: Identifier * hasReceiver: bool
+
 /// Intermediary type for better handling. These are spewed out by the parser.
 /// They exists so the code for processing imports and other codegen stuff is put here.
 type AstTopLevel =
+    | Module of identifier: Identifier
+    | Import of name: string * identifier: Identifier list
+    | Declare of AstDeclare
     | Definition of identifier: Identifier * tree: AstTree
-    | Import of identifier: Identifier
     | Do of tree: AstTree
-
-type Name = {
-    Identifier: string;
-    HasReceiver: bool;
-    IsFunction: bool;
-}
-
-type Function = {
-    Imports: Name seq;
-    Arguments: Identifier list;
-    Code: AstTopLevel;
-}

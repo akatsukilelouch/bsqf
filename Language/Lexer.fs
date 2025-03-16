@@ -15,7 +15,7 @@ let positioned constructor (position, value) =
 let private atom =
     getPosition .>>. (many1Satisfy <|
         fun c ->
-            not <| List.contains c ['('; ')'; '`'; '"'; ' '; '\n'; '\r']) |>> positioned Atom
+            not <| List.contains c ['('; ')'; '['; ']'; '`'; '"'; ' '; '\n'; '\r']) |>> positioned Atom
 
 let private literal =
     between <| skipChar '"' <| skipChar '"' <| (getPosition .>>. manyChars (attempt (pchar '\\' >>. pchar '"') <|> noneOf ['"'])) |>> positioned Literal
@@ -24,7 +24,7 @@ let private quote parser =
     skipChar ''' >>. (getPosition .>>. parser) |>> positioned Quote
 
 let rec private list: CharStream<unit> -> Reply<SExpr> =
-    let parenthesized = between (skipChar '(') (skipChar ')')
+    let parenthesized = between (skipChar '(' <|> skipChar '[') (skipChar ')' <|> skipChar ']')
 
     let self x = list x
 
