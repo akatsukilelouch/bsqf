@@ -8,6 +8,7 @@
     <Compile Include="Language\Ast.fs" />
     <Compile Include="Language\Lexer.fs" />
     <Compile Include="Language\Parser.fs" />
+    <Compile Include="Language\Compiler.fs" />
     <Compile Include="Language\Bootstrap.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

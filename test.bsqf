@@ -1,0 +1,10 @@
+(
+    (#import da)
+    (#declare function "BIS_fnc_arsenal")
+    (#declare operator "markerPos")
+    (#define arsenal
+        (:for-each (item items) (
+            (:set pos (:if a (+ 1 1) (- 2 2)))
+        ))
+    )
+)

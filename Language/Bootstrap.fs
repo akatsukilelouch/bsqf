@@ -2,64 +2,66 @@ module Bsqf.Bootstrap
 open Bsqf.Lexer
 open System.IO
 
-type Module = {
+type BootstrapModule = {
     Path: FileInfo;
     Name: string;
 }
 
-type Context = {
-    mutable Modules: Map<string, Module>;
-}
-
 exception InvalidFileException of string
 
-let resolve (config: Config.FileConfig) (context: Context) (entry: Module) =
+let report buffer (position: FParsec.Position) (path: string) (error: string) =
+    let rec findLineOffset (buffer: string) (index: int) =
+        if (buffer.Chars (index - 1)).Equals '\n' then
+            index
+        else
+            findLineOffset buffer (index - 1)
+
+    let findLineEnd (buffer: string) (offset: int) =
+        buffer[offset ..].IndexOf('\n') + offset
+
+    let lineStart = findLineOffset buffer (int position.Index)
+    let lineEnd = findLineEnd buffer lineStart
+
+    let localOffset = int position.Index - lineStart
+    let lineSlice = if not (lineEnd.Equals -1) then buffer[lineStart..lineEnd] else buffer[lineStart..]
+    let errorShower = new string(' ', localOffset) + "^"
+
+    printf "%s:%d:%d: %s\n\t%s\n\t%s\n" path position.Line position.Column error lineSlice errorShower
+
+let resolve (fileConfig: Config.FileConfig) (modules: Compiler.Module list) (entry: BootstrapModule) =
     let buffer = File.ReadAllText entry.Path.FullName
 
-    let lexed = Lexer.lex buffer
+    try
+        let lexed = Lexer.lex buffer
+        let ast = Parser.parse lexed
+        let module_ = Compiler.resolveModule modules ast
+        
+        ignore <| Compiler.compileModule fileConfig module_
 
-    match lexed with
-        | Lexed lexed -> 
-            let ast =
-                match lexed with
-                    | _, List inner -> Parser.parse inner
-                    | _ -> raise <| InvalidFileException "file should be a list"
+        Some module_
+    with 
+        | Lexer.LexerError error ->
+            report buffer error.Position entry.Path.FullName (error.Messages.ToString())
 
-            match ast with
-                | Parser.ParseResult.Ok tree -> 
-                    printf "%s\n" (tree.ToString())
-                | Parser.ParseResult.Error (position, error) ->
-                    let rec findLineOffset (buffer: string) (index: int) =
-                        if (buffer.Chars (index - 1)).Equals '\n' then
-                            index
-                        else
-                            findLineOffset buffer (index - 1)
+            None
+        | Parser.ParseException (position, error) ->
+            report buffer position entry.Path.FullName error
+            
+            None
+        | Compiler.CompilationError (position, error) ->
+            report buffer position entry.Path.FullName error
 
-                    let findLineEnd (buffer: string) (offset: int) =
-                        buffer[offset ..].IndexOf('\n') + offset
-
-                    let lineStart = findLineOffset buffer (int position.Index)
-                    let lineEnd = findLineEnd buffer lineStart
-
-                    let localOffset = (int position.Index) - lineStart
-                    let lineSlice = if not (lineEnd.Equals -1) then buffer[lineStart..lineEnd] else buffer[lineStart..]
-                    let errorShower = new string(' ', localOffset) + "^"
-
-                    printf "%s:%d:%d: %s\n\t%s\n\t%s\n" entry.Path.FullName position.Line position.Column error lineSlice errorShower
-
-        | Error error ->
-            printf "%s:%d:%d: %s\n" entry.Path.FullName error.Position.Line error.Position.Column (error.ToString())
-
-
+            None
+    
 let public bootstrap (config: Config.FileConfig) =
-    let context = {
-        Modules = Map [];
-    }
+    let mutable modules = []
 
     for bootstrapModule in config.BootstrapModules do
-        let moduleEntity = { Path = FileInfo bootstrapModule.Path; Name = Path.GetFileNameWithoutExtension bootstrapModule.Path }
+        let entry = { Path = FileInfo bootstrapModule.Path; Name = Path.GetFileNameWithoutExtension bootstrapModule.Path }
 
-        context.Modules <- context.Modules.Add(moduleEntity.Name, moduleEntity)
+        let module_ = resolve config modules entry
 
-    for entry in context.Modules do
-        resolve config context entry.Value
+        match module_ with
+            | Some module_ -> 
+                modules <- List.append modules [module_]
+            | None -> ()

@@ -30,14 +30,12 @@ let rec private list: CharStream<unit> -> Reply<SExpr> =
 
     getPosition .>>. parenthesized (between spaces spaces <| sepEndBy (attempt (quote self) <|> attempt literal <|> attempt atom <|> attempt self) spaces) |>> positioned List
 
-type Result =
-    | Lexed of SExpr
-    | Error of ParserError
+exception LexerError of ParserError
 
 let public lex buffer =
-    match run list buffer with
-        | Success (lexed, _, _) -> Lexed lexed
-        | Failure (_, error, _) -> Error error
+    match run (many list) buffer with
+        | Success (lexed, _, _) -> lexed
+        | Failure (_, error, _) -> raise <| LexerError error
 
 let public lexFile path =
     File.ReadAllText path |> lex

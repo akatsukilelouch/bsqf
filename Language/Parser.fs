@@ -11,7 +11,7 @@ let fail position reason =
 
 let rec parseSimpleLiteralAtom ((position, value): SExpr) =
     match value with
-        | Atom value -> value
+        | Atom value -> position, value
         | _ -> raise <| ParseException (position, "expected atom, probably a number")
 
 let isANumberLiteral (str: string) =
@@ -39,10 +39,10 @@ let rec parseExpression ((position, value): SExpr) : AstExpression =
 
             position, AstExpressionValue.If (parseExpression condition, parseExpression then_, else_ |> Option.map parseExpression)
         | List ((_, Atom ":for-each") :: defs) -> 
-            let element, list, body =
+            let identifier, list, body =
                 match defs with
-                    | (_, List ((_, Atom element) :: list :: [])) :: body :: [] ->
-                        element, list, body
+                    | (_, List ((position, Atom element) :: list :: [])) :: body :: [] ->
+                        (position, element), list, body
                     | (position, List _) :: [] ->
                         fail position "expected code after binding"
                     | (position, _) :: _ ->
@@ -50,7 +50,7 @@ let rec parseExpression ((position, value): SExpr) : AstExpression =
                     | [] ->
                         fail position "for-each binding requires binding a variable from a list in the form of (element list)"
 
-            position, AstExpressionValue.ForEach (element, parseExpression list, parseExpression body)
+            position, AstExpressionValue.ForEach (identifier, parseExpression list, parseExpression body)
         | Quote (_, List list)  ->
             let rec parseList items defs =
                 match defs with
@@ -63,13 +63,13 @@ let rec parseExpression ((position, value): SExpr) : AstExpression =
         | Quote _ ->
             fail position "you may only quote lists to create lists"
         | Atom name when not (isANumberLiteral name || name.StartsWith ":")-> 
-            position, Identifier name
+            position, Identifier (position, name)
         | Atom number when isANumber number ->
             position, Number number
         | Literal literal ->
             position, String literal
-        | List ((_, Atom func) :: args) ->
-            position, AstExpressionValue.Call (func, args |> List.map parseExpression)
+        | List ((funcPosition, Atom func) :: args) ->
+            position, AstExpressionValue.Call ((funcPosition, func), args |> List.map parseExpression)
         | List inner ->
             position, AstExpressionValue.Block (parseStatements [] inner)
         | _ -> 
@@ -95,10 +95,10 @@ and parseStatement ((position, value): SExpr) =
                         fail position "unexpected empty for clause"
 
             match defs with
-                | (_, Atom identifier) :: defs ->
+                | (identifierPosition, Atom identifier) :: defs ->
                     let from_, to_, step, code = getForDefs (None, None, None) defs
 
-                    position, AstStatementValue.For (identifier, from_, to_, step, parseStatements [] code)
+                    position, AstStatementValue.For ((identifierPosition, identifier), from_, to_, step, parseStatements [] code)
                 | (position, _) :: _ ->
                     fail position "excepted a for binding identifier that is an atom"
                 | [] -> 
@@ -143,15 +143,15 @@ and parseStatement ((position, value): SExpr) =
 
             position, AstStatementValue.Exit (with_ |> Option.map parseExpression)
         | List ((_, Atom ":set") :: defs) ->
-            let (name, expr) =
+            let (identifier, expr) =
                 match defs with
-                    | (_, Atom name) :: code :: [] -> name, code
+                    | (position, Atom name) :: code :: [] -> (position, name), code
                     | (position, _) :: _ ->
                         fail position "expected a name and an expression"
                     | [] ->
                         fail position "expected a name and an expression"
 
-            position, AstStatementValue.Set (name, parseExpression expr)
+            position, AstStatementValue.Set (identifier, parseExpression expr)
         | otherwise ->
             position, AstStatementValue.Expression (parseExpression (position, otherwise))
 and parseStatements (statements : AstStatement list) (expr: SExpr list) =
@@ -168,42 +168,42 @@ let rec parseTopLevel (tree: AstTopLevel list) (expr: SExpr list) =
                     | (_, Atom "#module") :: defs ->
                         let name =
                             match defs with
-                                | (_, Atom name) :: [] -> name
+                                | (position, Atom name) :: [] -> position, name
                                 | (position, _) :: _ ->
                                     fail position "expected module name"
                                 | _ ->
                                     fail position "expected module name"
 
-                        Module name
+                        position, Module name
                     | (_, Atom "#declare") :: defs ->
                         let declare =
                             match defs with
-                                | (_, Atom "function") :: (_, Literal name) :: [] -> Function name
-                                | (_, Atom "operator") :: (_, Literal name) :: [] -> AstDeclare.Operator (name, false)
-                                | (_, Atom "method") :: (_, Literal name) :: [] -> AstDeclare.Operator (name, true)
+                                | (_, Atom "function") :: (position, Literal name) :: [] -> Function (position, name)
+                                | (_, Atom "operator") :: (position, Literal name) :: [] -> AstDeclare.Operator ((position, name), false)
+                                | (_, Atom "method") :: (position, Literal name) :: [] -> AstDeclare.Operator ((position, name), true)
                                 | (position, _) :: _ ->
                                     fail position "expected function, operator or method and a name"
                                 | _ ->
                                     fail position "expected function, operator or method and a name"
 
-                        Declare declare
+                        position, Declare declare
                     | (_, Atom "#import") :: defs -> 
-                        let name, items =
+                        let identifier, items =
                             match defs with
-                                | (_, Atom name) :: [] ->
-                                    name, []
-                                | (_, Atom name) :: (_, List items) :: [] ->
-                                    name, items
+                                | (position, Atom name) :: [] ->
+                                    (position, name), []
+                                | (position, Atom name) :: (_, List items) :: [] ->
+                                    (position, name), items
                                 | (position, _) :: _ ->
                                     fail position "expected module name"
                                 | [] ->
                                     fail position "expected module name"
                         
-                        Import (name, items |> List.map parseSimpleLiteralAtom)
-                    | (_, Atom "#define") :: (_, Atom name) :: item :: [] -> 
-                        Definition (name, [parseStatement item])
-                    | (_, Atom "#define") :: (_, Atom name) :: body -> 
-                        Definition (name, parseStatements [] body)
+                        position, Import (identifier, items |> List.map parseSimpleLiteralAtom)
+                    | (_, Atom "#define") :: (namePosition, Atom name) :: item :: [] -> 
+                        position, Definition ((namePosition, name), [], [parseStatement item])
+                    | (_, Atom "#define") :: (namePosition, Atom name) :: (_, List args) :: body -> 
+                        position, Definition ((namePosition, name), args |> List.map parseSimpleLiteralAtom, parseStatements [] body)
                     | _ ->
                         fail position "a top-level entry should start with a built-in function #import or a #define"
 
@@ -239,8 +239,4 @@ type ParseResult =
 /// This context is later to be analyzed and compiled. At this point it is just better to use
 /// mapping table for compilation.
 let parse (expr : SExpr list) =
-    // call the recursive function
-    try Ok <| parseTopLevel [] expr
-    with
-        | ParseException (position, error) -> Error (position, error)
-        | error -> raise error
+    parseTopLevel [] expr

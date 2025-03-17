@@ -7,8 +7,9 @@ type Module = {
 }
 
 type FileConfig = {
+    Output: string;
     BootstrapModules: Module list;
-    GlobalDefinitionsPath: string option;
+    UseStdLib: bool;
 }
 
 exception InvalidConfigException
