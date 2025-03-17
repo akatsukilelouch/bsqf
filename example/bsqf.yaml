@@ -1,4 +1,5 @@
 BootstrapModules:
+  - Path: prelude.bsqf
   - Path: test.bsqf
 UseStdLib: true
 Output: dist/

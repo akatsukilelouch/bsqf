@@ -23,7 +23,7 @@ let report buffer (position: FParsec.Position) (path: string) (error: string) =
     let lineEnd = findLineEnd buffer lineStart
 
     let localOffset = int position.Index - lineStart
-    let lineSlice = if not (lineEnd.Equals -1) then buffer[lineStart..lineEnd] else buffer[lineStart..]
+    let lineSlice = if not (lineEnd.Equals (lineStart - 1)) then buffer[lineStart..lineEnd] else buffer[lineStart..]
     let errorShower = new string(' ', localOffset) + "^"
 
     printf "%s:%d:%d: %s\n\t%s\n\t%s\n" path position.Line position.Column error lineSlice errorShower

@@ -1,0 +1,6 @@
+(#module prelude)
+(#declare operator "+")
+(#declare operator "-")
+(#declare operator "*")
+(#declare operator "/")
+(#declare operator* "call")

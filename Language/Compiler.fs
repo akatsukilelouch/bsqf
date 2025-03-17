@@ -170,7 +170,16 @@ let resolveModule (modules: Module list) (topLevel: Bsqf.Ast.AstTopLevel list) =
 
     let declarations = topLevel |> List.choose chooseAstDeclareToDeclaration
 
-    let imports = topLevel |> List.choose (resolveImports modules) |> List.concat
+    let preludeImport =
+        modules
+            |> List.tryFind (fun x -> x.Name.Equals "prelude")
+            |> Option.map (
+                fun std -> topLevelPosition, AstTopLevelValue.Import ((topLevelPosition, "prelude"), []))
+
+    let preludedTopLevel =
+        match preludeImport with | None -> topLevel | Some import -> import :: topLevel
+
+    let imports = preludedTopLevel |> List.choose (resolveImports modules) |> List.concat
 
     let definitions = topLevel |> List.choose (chooseDefinitions modules)
 
@@ -383,7 +392,7 @@ and compileExpression (context: Context) (definition: Definition) (module_: Modu
                     compileList args
                     printf' " call %s;" name
                 | BinaryOperator false -> 
-                    if args.Length.Equals 2 then
+                    if not (args.Length.Equals 2) then
                         fail position "the operator has receiver and has no arity meaning it is a function of two arguments"
 
                     let receiver, args =
