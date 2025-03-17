@@ -180,7 +180,7 @@ let rec parseTopLevel (tree: AstTopLevel list) (expr: SExpr list) =
                             match defs with
                                 | (_, Atom "function") :: (position, Literal name) :: [] -> Function (position, name)
                                 | (_, Atom "builtin-function") :: (position, Literal name) :: [] ->
-                                    AstDeclare.Operator ((position, name), true, false)
+                                    AstDeclare.Operator ((position, name), false, true)
                                 | (_, Atom "operator") :: (position, Literal name) :: [] ->
                                     AstDeclare.Operator ((position, name), true, false)
                                 | (_, Atom "operator*") :: (position, Literal name) :: [] -> AstDeclare.Operator ((position, name), true, true)
