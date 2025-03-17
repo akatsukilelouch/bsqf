@@ -29,9 +29,9 @@ type AstTree = AstStatement list
 
 type AstDeclare =
     | Function of name: IdentifierOrRawValue
-    | Operator of name: IdentifierOrRawValue * hasReceiver: bool
+    | Operator of name: IdentifierOrRawValue * hasReceiver: bool * hasArity: bool
 
-    member this.Name = match this with | Function name | Operator (name, _) -> name
+    member this.Name = match this with | Function name | Operator (name, _, _) -> name
 
 /// Intermediary type for better handling. These are spewed out by the parser.
 /// They exists so the code for processing imports and other codegen stuff is put here.

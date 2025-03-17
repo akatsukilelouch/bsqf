@@ -1,0 +1,10 @@
+(#module test)
+(#declare method "+")
+(#declare method "-")
+(#declare method "*")
+(#declare method "/")
+
+(#declare function "BIS_fnc_arsenal")
+(#define arsenal (item a)
+    (BIS_fnc_arsenal )
+)

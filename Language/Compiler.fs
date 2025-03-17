@@ -18,7 +18,7 @@ type ResolvedImport =
 type Callable =
     | CustomFunction
     | UnaryOperator
-    | BinaryOperator
+    | BinaryOperator of noList: bool
 
 type Module =
     {
@@ -45,19 +45,37 @@ type Module =
             (fun y -> let (_, name) = y.Name in name.Equals x)
 
     member this.GetCallable x =
-        this.GetImport x |> Option.map (
-            fun import -> 
-                match import with
-                    | ResolvedImport.Declaration (Declaration.Operator (_, receiver)) ->
-                        if receiver then
-                            BinaryOperator
-                        else
-                            UnaryOperator
-                    | ResolvedImport.Declaration (Declaration.Function _)
-                    | Declaration (Declaration.Function _)
-                    | ResolvedImport.Definition _ ->
-                        CustomFunction)
+        let imported =
+            this.GetImport x |> Option.map (
+                fun import -> 
+                    match import with
+                        | ResolvedImport.Declaration (Declaration.Operator (_, receiver, hasArity)) ->
+                            if receiver then
+                                BinaryOperator hasArity
+                            else
+                                UnaryOperator
+                        | ResolvedImport.Declaration (Declaration.Function _)
+                        | ResolvedImport.Definition _ ->
+                            CustomFunction)
 
+        match imported with
+            | Some _ as imported -> imported
+            | None ->
+                let declaration =
+                    this.GetDeclaration x |> Option.map (
+                        fun declaration -> 
+                            match declaration with
+                                | Declaration.Operator (_, receiver, hasArity) ->
+                                    if receiver then
+                                        BinaryOperator hasArity
+                                    else
+                                        UnaryOperator
+                                | Declaration.Function _ ->
+                                    CustomFunction)
+
+                match declaration with
+                    | Some _ as declared -> declared
+                    | None -> this.GetDefinition x |> Option.map (fun _ -> CustomFunction)
 
 exception CompilationError of position: Position * message: string
 exception UnsourcedCompilationError of message: string
@@ -144,7 +162,7 @@ let resolveModule (modules: Module list) (topLevel: Bsqf.Ast.AstTopLevel list) =
     // this is made through list filters to minimize code structure although this is not as fast as manual
     // tree descend with local conditioning
 
-    let (_, name) =
+    let _, name =
         match topLevel |> List.choose (chooseModuleDefinitions modules) with
             | [] -> fail topLevelPosition "there must be a module definition"
             | identifier :: [] -> identifier
@@ -319,7 +337,7 @@ and compileExpression (context: Context) (definition: Definition) (module_: Modu
                 | otherwise ->
                     print' "{ "
                     expr context otherwise
-                    print' "; }"
+                    print' " }"
 
             match else_ with
                 | Some (_, Block stmts as self) ->
@@ -328,7 +346,7 @@ and compileExpression (context: Context) (definition: Definition) (module_: Modu
                 | Some otherwise ->
                     print' " else { "
                     expr context otherwise
-                    print' "; }"
+                    print' " }"
                 | None -> ()
 
         | AstExpressionValue.String literal ->
@@ -364,7 +382,21 @@ and compileExpression (context: Context) (definition: Definition) (module_: Modu
                 | CustomFunction ->
                     compileList args
                     printf' " call %s;" name
-                | BinaryOperator -> 
+                | BinaryOperator false -> 
+                    if args.Length.Equals 2 then
+                        fail position "the operator has receiver and has no arity meaning it is a function of two arguments"
+
+                    let receiver, args =
+                        match args with
+                            | receiver :: rest -> receiver, rest
+                            | [] ->
+                                fail upperPosition "this function is an operation that takes a receiver but none specified"
+
+                    expr context receiver
+                    printf' " %s " name
+                    expr context args.Head
+                    print' ";"
+                | BinaryOperator true -> 
                     let receiver, args =
                         match args with
                             | receiver :: rest -> receiver, rest
@@ -389,9 +421,9 @@ let compileTreeWithParams (definition: Definition) (module_: Module) (into: Stre
     compileStatements { Context.Variables = args; GenSymMonotonic = ref 0; } definition module_ into tree
 
 let compileModule (fileConfig: Config.FileConfig) (module_: Module) =
-    let compileDefinition definition =
-        let output = Path.Join(fileConfig.Output, sprintf "%s.sqf" module_.Name)
-        use writer = new StreamWriter(File.OpenWrite(output))
+    let compileDefinition (definition: Definition) =
+        let output = Path.Join(fileConfig.Output, sprintf "fn_%s.sqf" (let (_, name) = definition.Name in name))
+        use writer = new StreamWriter(File.OpenWrite output)
 
         compileTreeWithParams definition module_ writer definition.Arguments definition.Code
 

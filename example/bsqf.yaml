@@ -1,0 +1,4 @@
+BootstrapModules:
+  - Path: test.bsqf
+UseStdLib: true
+Output: dist/

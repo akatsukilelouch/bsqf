@@ -33,7 +33,7 @@ let rec private list: CharStream<unit> -> Reply<SExpr> =
 exception LexerError of ParserError
 
 let public lex buffer =
-    match run (many list) buffer with
+    match run (sepEndBy list spaces .>> eof) buffer with
         | Success (lexed, _, _) -> lexed
         | Failure (_, error, _) -> raise <| LexerError error
 

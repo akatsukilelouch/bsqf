@@ -179,8 +179,11 @@ let rec parseTopLevel (tree: AstTopLevel list) (expr: SExpr list) =
                         let declare =
                             match defs with
                                 | (_, Atom "function") :: (position, Literal name) :: [] -> Function (position, name)
-                                | (_, Atom "operator") :: (position, Literal name) :: [] -> AstDeclare.Operator ((position, name), false)
-                                | (_, Atom "method") :: (position, Literal name) :: [] -> AstDeclare.Operator ((position, name), true)
+                                | (_, Atom "operator") :: (position, Literal name) :: [] ->
+                                    AstDeclare.Operator ((position, name), false, false)
+                                | (_, Atom "operator*") :: (position, Literal name) :: [] ->
+                                    AstDeclare.Operator ((position, name), false, false)
+                                | (_, Atom "method") :: (position, Literal name) :: [] -> AstDeclare.Operator ((position, name), true, true)
                                 | (position, _) :: _ ->
                                     fail position "expected function, operator or method and a name"
                                 | _ ->
@@ -212,10 +215,6 @@ let rec parseTopLevel (tree: AstTopLevel list) (expr: SExpr list) =
             fail position "a top-level entry should be either an import or a define macro call"
         | [] ->
             tree |> List.rev
-
-type ParseResult =
-    | Ok of AstTopLevel list
-    | Error of position: Position * message: string
 
 /// The parse routine takes the raw expression and gives out the AST that
 /// embodies the actual code to be spewed out later in the pipeline.

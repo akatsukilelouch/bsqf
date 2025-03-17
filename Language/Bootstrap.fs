@@ -11,7 +11,7 @@ exception InvalidFileException of string
 
 let report buffer (position: FParsec.Position) (path: string) (error: string) =
     let rec findLineOffset (buffer: string) (index: int) =
-        if (buffer.Chars (index - 1)).Equals '\n' then
+        if index - 1 <= 0 || (buffer.Chars (index - 1)).Equals '\n' then
             index
         else
             findLineOffset buffer (index - 1)
@@ -35,13 +35,15 @@ let resolve (fileConfig: Config.FileConfig) (modules: Compiler.Module list) (ent
         let lexed = Lexer.lex buffer
         let ast = Parser.parse lexed
         let module_ = Compiler.resolveModule modules ast
+
+        ignore <| Directory.CreateDirectory fileConfig.Output
         
         ignore <| Compiler.compileModule fileConfig module_
 
         Some module_
     with 
         | Lexer.LexerError error ->
-            report buffer error.Position entry.Path.FullName (error.Messages.ToString())
+            printf "%s" (error.ToString())
 
             None
         | Parser.ParseException (position, error) ->
